@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/metacubex/mihomo/common/convert"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -44,6 +45,7 @@ type TrojanOption struct {
 	Server            string         `proxy:"server"`
 	Port              int            `proxy:"port"`
 	Password          string         `proxy:"password"`
+	TLS               bool           `proxy:"tls,omitempty"`
 	ALPN              []string       `proxy:"alpn,omitempty"`
 	SNI               string         `proxy:"sni,omitempty"`
 	SkipCertVerify    bool           `proxy:"skip-cert-verify,omitempty"`
@@ -94,22 +96,34 @@ func (t *Trojan) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.
 			}
 		}
 
-		alpn := trojan.DefaultWebsocketALPN
-		if t.option.ALPN != nil { // structure's Decode will ensure value not nil when input has value even it was set an empty array
-			alpn = t.option.ALPN
-		}
+		if t.option.TLS {
+			alpn := trojan.DefaultWebsocketALPN
+			if t.option.ALPN != nil { // structure's Decode will ensure value not nil when input has value even it was set an empty array
+				alpn = t.option.ALPN
+			}
+			wsOpts.TLS = true
+			tlsConfig := &tls.Config{
+				NextProtos:         alpn,
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: t.option.SkipCertVerify,
+				ServerName:         host,
+			}
 
-		wsOpts.TLS = true
-		tlsConfig := &tls.Config{
-			NextProtos:         alpn,
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: t.option.SkipCertVerify,
-			ServerName:         t.option.SNI,
-		}
+			wsOpts.TLSConfig, err = ca.GetSpecifiedFingerprintTLSConfig(tlsConfig, t.option.Fingerprint)
+			if err != nil {
+				return nil, err
+			}
 
-		wsOpts.TLSConfig, err = ca.GetSpecifiedFingerprintTLSConfig(tlsConfig, t.option.Fingerprint)
-		if err != nil {
-			return nil, err
+			if t.option.SNI != "" {
+				wsOpts.TLSConfig.ServerName = t.option.SNI
+			} else if host := wsOpts.Headers.Get("Host"); host != "" {
+				wsOpts.TLSConfig.ServerName = host
+			}
+		} else {
+			if host := wsOpts.Headers.Get("Host"); host == "" {
+				wsOpts.Headers.Set("Host", convert.RandHost())
+				convert.SetUserAgent(wsOpts.Headers)
+			}
 		}
 
 		c, err = vmess.StreamWebsocketConn(ctx, c, wsOpts)
